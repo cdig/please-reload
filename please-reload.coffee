@@ -8,33 +8,43 @@ ws = require "ws"
 networkHost = os.networkInterfaces().en0?.filter((i)-> i.family is "IPv4")[0]?.address
 reloadCount = 0
 started = false
-websocket = null
+websockets = {}
 
-mimeTypes =
-  css:   "text/css"
-  gif:   "image/gif"
-  html:  "text/html"
-  ico:   "image/x-icon"
-  jpeg:  "image/jpg"
-  jpg:   "image/jpg"
-  js:    "text/javascript"
-  json:  "application/json"
-  m4v:   "video/mp4"
-  map:   "application/json"
-  mp3:   "audio/mpeg"
-  mp4:   "video/mp4"
-  pdf:   "application/pdf"
-  png:   "image/png"
-  svg:   "image/svg+xml"
-  wasm:  "application/wasm"
-  wgsl:  "text/plain"
-  woff:  "application/font-woff"
-  woff2: "font/woff2"
+exports.mimeTypes =
+  coffee: "text/coffeescript"
+  css:    "text/css"
+  csv:    "text/csv"
+  gif:    "image/gif"
+  glsl:   "text/plain"
+  gz:     "application/gzip"
+  html:   "text/html"
+  ico:    "image/x-icon"
+  jpeg:   "image/jpeg"
+  jpg:    "image/jpeg"
+  js:     "text/javascript"
+  json:   "application/json"
+  map:    "application/json"
+  mjs:    "text/javascript"
+  mov:    "video/quicktime"
+  mp3:    "audio/mpeg"
+  mp4:    "video/mp4"
+  pdf:    "application/pdf"
+  png:    "image/png"
+  rss:    "text/xml"
+  svg:    "image/svg+xml"
+  swf:    "application/x-shockwave-flash"
+  txt:    "text/plain"
+  wasm:   "application/wasm"
+  webp:   "image/webp"
+  wgsl:   "text/wgsl"
+  woff2:  "font/woff2"
+  woff:   "font/woff"
+  xml:    "text/xml"
+  xslt:   "text/xml"
 
 # Who needs chalk when you can just roll your own ANSI escape sequences
 do ()->
-  global.white = (t)-> t
-  for color, n of red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, cyan: 36
+  for color, n of red: 31, green: 32, yellow: 33, blue: 34
     do (color, n)-> global[color] = (t)-> "\x1b[#{n}m" + t + "\x1b[0m"
 
 timestamp = ()->
@@ -60,14 +70,13 @@ faviconFallback = """
 
 
 # This function generates the JS needed to perform live reloading, plus a rainbow-pulse reload indicator
-reloadScript =  (address)->
-  """
+reloadScript =  (address, content)->
+  html = """
   <style>
     please-reload {
       position: fixed;
       display: block;
-      top: 0;
-      left: 0;
+      inset: 0;
       width: 100%;
       height: 48px;
       background: linear-gradient(90deg, rgb(255, 0, 0), rgb(255, 154, 0), rgb(208, 222, 33), rgb(79, 220, 74), rgb(63, 218, 216), rgb(47, 201, 226), rgb(28, 127, 238), rgb(95, 21, 242), rgb(186, 12, 248), rgb(251, 7, 217));
@@ -84,6 +93,12 @@ reloadScript =  (address)->
     }
   </script>
   """
+  bodyIdx = content.lastIndexOf "</body>"
+  if bodyIdx > -1
+    "#{content.slice 0, bodyIdx}#{html}#{content.slice bodyIdx}"
+  else
+    content + html
+
 
 
 # Write out the headers and respond with an optional body
@@ -107,7 +122,7 @@ handleRequest = (root)-> (req, res)->
       filePath = filePath.replace "//", "/" # TODO: if we remove the slash on the previous line, can we remove this line?
       ext = "html"
 
-  contentType = mimeTypes[ext]
+  contentType = exports.mimeTypes[ext]
 
   unless contentType?
     log red "Unknown Media Type for url: #{req.url}"
@@ -154,12 +169,7 @@ handleRequest = (root)-> (req, res)->
     fs.readFile filePath, (error, content)->
       return respond res, 404 if error?.code is "ENOENT"
       return respond res, 500, error.code if error?
-      if ext is "html"
-        content = content.toString()
-        if -1 < content.indexOf "</body>"
-          content = content.replace "</body>", "  #{reloadScript req.headers.host}\n</body>"
-        else
-          content += reloadScript req.headers.host
+      content = reloadScript req.headers.host, "" + content if ext is "html"
       respond res, 200, content, headers
 
 
@@ -183,22 +193,24 @@ createServer = (root, host, port, name)-> new Promise (resolve)->
     logStarted name, green "http://#{host}:#{port}"
     resolve port
 
-  # When the browser connects, upgrade it to a websocket conn, and store the websocket for firing reloads
-  wss = new ws.Server noServer: true
-  server.on "upgrade", (r,s,h)-> wss.handleUpgrade r,s,h, (ws)->
-    # Terminate and replace the old websocket connection (if any) with this new one
-    websocket?.terminate()
-    websocket = ws
+  # Store the websocket for firing reloads
+  websockets[name] = new ws.WebSocketServer { server }
 
   server.listen { host, port: port }
 
 # Reload any connected browsers
 exports.reload = ()->
-  websocket.send "reload"
+  for name, websocket of websockets
+    for client in Array.from websocket.clients
+      if client.readyState is 1
+        client.send "reload"
   log green "Reload ##{++reloadCount}"
 
+
 # Given a root file path, serve those files at two addresses: localhost, and the current IP address
-exports.serve = (root)->
+# Optionally open a browser with this server. By default, opens the root. Set the second arg to false
+# to not open a browser, or pass a string to open a specific path from the root
+exports.serve = (root, open = true)->
   return if started
   started = true
 
@@ -209,7 +221,10 @@ exports.serve = (root)->
   localPort = await createServer root, "localhost", 3000, "local"
 
   # Open localhost automatically
-  child_process.execSync "open http://localhost:#{localPort}"
+  if open
+    cmd = "open http://localhost:#{localPort}"
+    if typeof open is "string" then cmd += "/" + open.replace /^\//, "" # strip leading slash
+    child_process.execSync cmd
 
   # Start a server for network access
   if networkHost
