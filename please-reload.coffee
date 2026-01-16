@@ -174,29 +174,43 @@ handleRequest = (root)-> (req, res)->
 
 
 # Set up a server. Returns a promise that resolves with the port that we ended up using.
-createServer = (root, host, port, name)-> new Promise (resolve)->
+createServer = (root, host, startPort, name) -> new Promise (resolve, reject) ->
 
-  # Set up our file server
-  server = http.createServer handleRequest root
-
-  server.on "error", (e)->
-    # If the port is already in use, try the next port
-    if e.code is "EADDRINUSE"
-      server.close()
-      server.listen { host, port: ++port }
-    # For other errors, just make some noise
-    else
-      log red("Unhandled server error:"), e
-
-  # When we successfully fire up the server, make an announcement and resolve the promise
-  server.on "listening", ()->
-    logStarted name, green "http://#{host}:#{port}"
-    resolve port
-
-  # Store the websocket for firing reloads
-  websockets[name] = new ws.WebSocketServer { server }
-
-  server.listen { host, port: port }
+  tryListen = (port) ->
+    # Create a fresh server for each attempt (simplest + avoids weird states)
+    server = http.createServer handleRequest root
+  
+    server.once "error", (e) ->
+      if e.code is "EADDRINUSE"
+        # Retry next port
+        tryListen port + 1
+      else
+        log red("Unhandled server error:"), e
+        reject e
+  
+    server.once "listening", ->
+      actual = server.address()
+      actualPort = actual?.port ? port
+  
+      url = "http://#{host}:#{actualPort}"
+      logStarted name, green url
+  
+      # IMPORTANT: create ws server only after HTTP server is successfully bound
+      key = "#{name}-#{host}:#{actualPort}"
+  
+      wss = new ws.WebSocketServer { server }
+  
+      # Prevent unhandled WS errors from crashing the process
+      wss.on "error", (err) ->
+        log red("WebSocketServer error (#{key}):"), err
+  
+      websockets[key] = wss
+  
+      resolve actualPort
+  
+    server.listen { host, port }
+  
+  tryListen startPort
 
 # Reload any connected browsers
 exports.reload = ()->
