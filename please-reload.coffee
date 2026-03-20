@@ -41,6 +41,8 @@ exports.mimeTypes =
   woff:   "font/woff"
   xml:    "text/xml"
   xslt:   "text/xml"
+  glb:    "model/gltf-binary"
+
 
 # Who needs chalk when you can just roll your own ANSI escape sequences
 do ()->
