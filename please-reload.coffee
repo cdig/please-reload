@@ -42,6 +42,7 @@ exports.mimeTypes =
   xml:    "text/xml"
   xslt:   "text/xml"
   glb:    "model/gltf-binary"
+  hdr:    "image/vnd.radiance"
 
 
 # Who needs chalk when you can just roll your own ANSI escape sequences
